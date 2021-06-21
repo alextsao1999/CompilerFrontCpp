@@ -11,6 +11,8 @@
 #include <memory>
 class Type;
 using TypePtr = Type *;
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/DerivedTypes.h"
 
 class Token {
     int tag_ = 0;
@@ -29,6 +31,7 @@ public:
     static Token real(float value) { return Token(REAL, value); }
     static Token num(int value) { return Token(NUM, value); }
     static Token temp() { return Token("t", TEMP); }
+    static Token type(const std::string &s, TypePtr ty) { return Token(s, BASIC, ty); }
     enum Tag {
         AND   = 256,  BASIC = 257,  BREAK = 258,  DO   = 259, ELSE  = 260,
         EQ    = 261,  FALSE = 262,  GE    = 263,  ID   = 264, IF    = 265,
@@ -49,7 +52,7 @@ public:
     const std::string &lexeme() const { return  lexeme_; }
     Type *type() { assert(tag_ == BASIC || tag_ == INDEX);return type_; }
     int number() { assert(tag_ == NUM);return number_; }
-    int real() { assert(tag_ == REAL);return real_; }
+    float real() { assert(tag_ == REAL);return real_; }
     bool operator==(const Token &rhs) {
         return tag_ == rhs.tag_ 
             && lexeme_ == rhs.lexeme_
@@ -58,6 +61,9 @@ public:
     }
     bool operator!=(const Token &rhs) {
         return !(*this == rhs);
+    }
+    bool operator==(int tag) {
+        return tag_ == tag;
     }
 
     std::string toString() {
@@ -81,6 +87,7 @@ class Type : public Token {
     bool isArray_ = false;
     Type *of_ = null();
     int size_ = 0;
+    llvm::Type *type_ = nullptr;
 public:
     static Type *Char;
     static Type *Float;
@@ -98,6 +105,22 @@ public:
     static bool numeric(Type *p) {
         return p == Char || p == Int || p == Float;
     }
+    static llvm::Value *cast(Type *src, Type *des, llvm::Value *v) {
+        using Ops = llvm::Instruction::CastOps;
+        static std::map<std::pair<Type *, Type *>, Ops> cvt = {
+            {{Int, Float}, Ops::FPToSI},
+            {{Float, Int}, Ops::SIToFP},
+        };
+        if (src == des) {
+            return v;
+        }
+        if (cvt.count(std::pair(src, des))) {
+            Ops op = cvt[std::pair(src, des)];
+            return llvm::CastInst::Create(op, v, des->type());
+        }
+        assert(!"unsupported type cast");
+        return v;
+    }
     static Type *newArray(int sz, Type *p) {
         static std::vector<std::unique_ptr<Type>> container;
         Type *ty = new Type(sz, p);
@@ -105,8 +128,13 @@ public:
         return ty;
     }
     Type() : Token() {}
-    Type(std::string s, int width) : Token(s, Token::BASIC, this), width_(width) {}
-    Type(int sz, Type *p) : Token("[]", Token::INDEX, this), of_(p), width_(sz * p->width_), size_(sz), isArray_(true) {}
+    //Type(std::string s, int width) : Token(s, Token::BASIC, this), width_(width) {}
+    Type(std::string s, int width, llvm::Type *ty) : Token(s, Token::BASIC, this), width_(width), type_(ty) {}
+    Type(int sz, Type *p) : Token("[]", Token::INDEX, this), of_(p), width_(sz * p->width_), size_(sz), isArray_(true) {
+        if (p->type())
+            type_ = llvm::ArrayType::get(p->type(), sz);
+    }
+    //Type(int sz, Type *p, llvm::Type *ty) : Token("[]", Token::INDEX, this), of_(p), width_(sz * p->width_), size_(sz), isArray_(true), type_(ty) {}
     Type *of() {
         return of_;
     }
@@ -114,6 +142,7 @@ public:
         return isArray_;
     }
     int width() { return width_; }
+    llvm::Type *type() { return type_; }
 };
 
 #endif //COMPILERFRONTCPP_TOKEN_H

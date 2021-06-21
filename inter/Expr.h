@@ -8,6 +8,27 @@
 #include <Node.h>
 #include <memory>
 
+#include "llvm/IR/Module.h"
+#include "llvm/IR/PassManager.h"
+#include "llvm/IR/IRBuilder.h"
+
+//using namespace llvm;
+using ValuePtr = llvm::Value *;
+
+extern llvm::LLVMContext TheContext;
+
+static std::unique_ptr<llvm::Module> TheModule;
+static std::unique_ptr<llvm::IRBuilder<>> Builder;
+//static std::unique_ptr<KaleidoscopeJIT> TheJIT;
+
+static void InitializeModule() {
+  // Open a new module.
+  // TheContext = std::make_unique<llvm::LLVMContext>();
+  TheModule = std::make_unique<llvm::Module>("My Module", TheContext);
+  //TheModule->setDataLayout(TheJIT->getDataLayout());
+
+  Builder = std::make_unique<llvm::IRBuilder<>>(TheContext);
+}
 
 struct Expr;
 using ExprPtr = std::shared_ptr<Expr>;
@@ -34,6 +55,7 @@ struct Expr : public Node {
         return op.toString();
     }
 
+    virtual ValuePtr codegen() { return nullptr; }
 };
 struct Constant;
 using ConstantPtr = std::shared_ptr<Constant>;
@@ -47,17 +69,31 @@ struct Constant : public Expr {
       if ( this == True.get() && t != 0 ) emit("goto L" + std::to_string(t));
       else if ( this == False.get() && f != 0) emit("goto L" + std::to_string(f));
    }
+
+   ValuePtr codegen() override {
+       if (this == True.get()) return Builder->getTrue();
+       if (this == False.get()) return Builder->getFalse();
+       if (op.isReal()) return llvm::ConstantFP::get(TheContext, llvm::APFloat(op.real()));
+       return Builder->getInt32(op.number());
+   }
 };
 struct Id;
 using IdPtr = std::shared_ptr<Id>;
 struct Id : public Expr {
     int offset;
-    Id(Token id, TypePtr p, int b) : Expr(id, p), offset(b) {}
+    ValuePtr value;
+    Id(Token id, TypePtr p, int b) : Expr(id, p), offset(b) {
+        value = Builder->CreateAlloca(p->type());
+    }
     //	public String toString() {return "" + op.toString() + offset;}
+   ValuePtr codegen() override {
+       return value;
+   }
 
 };
 struct Temp : public Expr {
     int number = 0;
+    ValuePtr value;
     Temp(TypePtr p) : Expr(Token::temp(), p) {
         static int count = 0;
         number = ++count;
@@ -86,6 +122,17 @@ struct Unary : public Op {
         return std::make_shared<Unary>(op, expr->reduce()); 
     }
     std::string toString() override { return op.toString()+" "+expr->toString(); }
+    virtual ValuePtr codegen() {
+        if (op == '-') {
+            //Builder->CreateSub()
+            
+            return Builder->CreateUnOp(llvm::Instruction::UnaryOps::FNeg, expr->codegen());
+        }
+        assert(!"not reachable");
+        return nullptr;
+    }
+
+
 };
 struct Arith : public Op {
     ExprPtr expr1, expr2;
@@ -101,6 +148,51 @@ struct Arith : public Op {
     }
     std::string toString() override {
         return expr1->toString() + " " + op.toString() + " " + expr2->toString();
+    }
+    ValuePtr binaryOpInt(int op, ValuePtr L, ValuePtr R) {
+        if (op == '+') {
+            return Builder->CreateAdd(L, R, "addtemp");
+        }
+        if (op == '-') {
+            return Builder->CreateSub(L, R, "subtemp");
+        }
+        if (op == '*') {
+            return Builder->CreateMul(L, R, "multemp");
+        }
+        if (op == '/') {
+            return Builder->CreateSDiv(L, R, "divtemp");
+        }
+        return nullptr;
+    }
+    ValuePtr binaryOpFloat(int op, ValuePtr L, ValuePtr R) {
+        if (op == '+') {
+            return Builder->CreateFAdd(L, R, "addtemp");
+        }
+        if (op == '-') {
+            return Builder->CreateFSub(L, R, "subtemp");
+        }
+        if (op == '*') {
+            return Builder->CreateFMul(L, R, "multemp");
+        }
+        if (op == '/') {
+            return Builder->CreateFDiv(L, R, "divtemp");
+        }
+        return nullptr;
+    }
+    virtual ValuePtr codegen() {
+        ValuePtr L = expr1->codegen();
+        ValuePtr R = expr2->codegen();
+        L = Type::cast(expr1->type, type, L);
+        R = Type::cast(expr2->type, type, R);
+        if (type == Type::Float) {
+            return binaryOpFloat(op.tag(), L, R);
+        }
+        if (type == Type::Int) {
+            return binaryOpInt(op.tag(), L, R);
+        }
+        
+        assert(!"not reachable");
+        return nullptr;
     }
 
 };
@@ -118,6 +210,10 @@ struct Access : public Op {
     std::string toString() override {
         return array->toString() + " [ " + index->toString() + " ]";
     }
+   ValuePtr codegen() override {
+       ValuePtr v = Builder->CreateGEP(array->codegen(), index->codegen());
+       return Builder->CreateLoad(v);
+   }
 
 };
 struct Logical : public Expr {
@@ -150,7 +246,7 @@ struct Logical : public Expr {
         return expr1->toString() + " " + op.toString() + " " + expr2->toString();
     }
 };
-
+using Pred = llvm::CmpInst::Predicate;
 struct And : public Logical {
     using Logical::Logical;
     void jumping(int t, int f) override {
@@ -158,6 +254,11 @@ struct And : public Logical {
       expr1->jumping(0, label);
       expr2->jumping(t,f);
       if( f == 0 ) emitlabel(label);
+   }
+
+   ValuePtr codegen() override {
+       ValuePtr ops[2] = {expr1->codegen(), expr2->codegen()};
+       return Builder->CreateAnd(ops);
    }
 };
 struct Not : public Logical {
@@ -168,6 +269,10 @@ struct Not : public Logical {
     std::string toString() override {
         return op.toString() + " " + expr2->toString();
     }
+   ValuePtr codegen() override {
+       return Builder->CreateNot(expr1->codegen(), "nottemp");
+   }
+
 };
 
 struct Or : public Logical {
@@ -177,6 +282,10 @@ struct Or : public Logical {
         expr1->jumping(label, 0);
         expr2->jumping(t,f);
         if( t == 0 ) emitlabel(label);
+    }
+    ValuePtr codegen() override {
+        ValuePtr ops[2] = {expr1->codegen(), expr2->codegen()};
+        return Builder->CreateOr(ops);
     }
 
 };
@@ -198,7 +307,36 @@ struct Rel : public Logical {
         std::string test = a->toString() + " " + op.toString() + " " + b->toString();
         emitjumps(test, t, f);
     }
-
+    
+    ValuePtr codegen() override {
+        using InstOps = llvm::Instruction::OtherOps;
+        using CmpOps = llvm::CmpInst::Predicate;
+        ValuePtr L = expr1->codegen();
+        ValuePtr R = expr2->codegen();
+        L = Type::cast(expr1->type, type, L);
+        R = Type::cast(expr2->type, type, R);
+        InstOps instOp;
+        CmpOps cmpOp;
+        if (type == Type::Float) {
+            instOp = InstOps::FCmp;
+        }
+        if (type == Type::Int) {
+            instOp = InstOps::ICmp;
+        }
+        if (op == Token::EQ) {
+            cmpOp = type == Type::Int ? CmpOps::ICMP_EQ : CmpOps::FCMP_OEQ;
+        } else if(op == Token::GE) {
+            cmpOp = type == Type::Int ? CmpOps::ICMP_SGE : CmpOps::FCMP_OGE;
+        } else if(op == Token::LE) {
+            cmpOp = type == Type::Int ? CmpOps::ICMP_SLE : CmpOps::FCMP_OLE;
+        } else if(op == '>') {
+            cmpOp = type == Type::Int ? CmpOps::ICMP_SGT : CmpOps::FCMP_OGT;
+        } else if(op == '<') {
+            cmpOp = type == Type::Int ? CmpOps::ICMP_SLT : CmpOps::FCMP_OLT;
+        }
+        return llvm::CmpInst::Create(instOp, cmpOp, L, R, "cmptemp");
+        
+     }
 };
 struct Stmt;
 using StmtPtr = std::shared_ptr<Stmt>;
@@ -243,6 +381,24 @@ struct Do : public Stmt {
       expr->jumping(b,0);
    }
 };
+
+struct If;
+using IfPtr = std::shared_ptr<If>;
+struct If : public Stmt {
+   ExprPtr expr; StmtPtr stmt;
+
+   If(ExprPtr x, StmtPtr s) {
+      expr = x;  stmt = s;
+      if(expr->type != Type::Bool ) expr->error("boolean required in if");
+   }
+
+   void gen(int b, int a) override {
+      int label = newlabel(); // label for the code for stmt
+      expr->jumping(0, a);     // fall through on true, goto a on false
+      emitlabel(label); if (stmt) stmt->gen(label, a);
+   }
+};
+
 struct Else;
 using ElsePtr = std::shared_ptr<Else>;
 struct Else : public Stmt {
@@ -261,22 +417,7 @@ struct Else : public Stmt {
       emitlabel(label2); if (stmt2) stmt2->gen(label2, a);
    }
 };
-struct If;
-using IfPtr = std::shared_ptr<If>;
-struct If : public Stmt {
-   ExprPtr expr; StmtPtr stmt;
 
-   If(ExprPtr x, StmtPtr s) {
-      expr = x;  stmt = s;
-      if(expr->type != Type::Bool ) expr->error("boolean required in if");
-   }
-
-   void gen(int b, int a) override {
-      int label = newlabel(); // label for the code for stmt
-      expr->jumping(0, a);     // fall through on true, goto a on false
-      emitlabel(label); if (stmt) stmt->gen(label, a);
-   }
-};
 struct Seq;
 using SeqPtr = std::shared_ptr<Seq>;
 struct Seq : public Stmt {
@@ -314,6 +455,10 @@ struct Set : public Stmt {
    void gen(int b, int a) override {
       emit( id->toString() + " = " + expr->gen()->toString() );
    }
+    ValuePtr codegen() {
+        return Builder->CreateStore(expr->codegen(), id->codegen());
+    }
+
 };
 struct SetElem;
 using SetElemPtr = std::shared_ptr<SetElem>;
