@@ -8,12 +8,14 @@ find_package(LLVM REQUIRED CONFIG)
 add_definitions(${LLVM_DEFINITIONS})
 include_directories(${LLVM_INCLUDE_DIRS})
 link_directories(${LLVM_LIBRARY_DIRS})
-llvm_map_components_to_libnames(LLVM_LIBS all)
 
 foreach(dir inter;lexer;symbols;parser)
-    include_directories(${dir})
-    aux_source_directory(${dir} SOURCES)
+include_directories(${dir})
+aux_source_directory(${dir} SOURCES)
 endforeach()
 
 add_executable(CompilerFrontCpp main.cpp ${SOURCES})
+
+llvm_map_components_to_libnames(LLVM_LIBS core support irreader)
 target_link_libraries(CompilerFrontCpp ${LLVM_LIBS})
+message(STATUS ${LLVM_LIBS})

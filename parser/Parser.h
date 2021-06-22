@@ -34,6 +34,7 @@ public:
         StmtPtr s = block();
         int begin = s->newlabel();int after = s->newlabel();
         s->emitlabel(begin); s->gen(begin, after); s->emitlabel(after);
+        s->codegen();
     }
     StmtPtr block() {
         Env env(top);

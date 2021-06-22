@@ -20,8 +20,13 @@ static void InitializeModule() {
   // TheContext = std::make_unique<llvm::LLVMContext>();
   TheModule = std::make_unique<llvm::Module>("My Module", TheContext);
   //TheModule->setDataLayout(TheJIT->getDataLayout());
+  
+  llvm::FunctionType *FT = llvm::FunctionType::get(llvm::Type::getInt32Ty(TheContext), false);
+  llvm::Function *F = llvm::Function::Create(FT, llvm::Function::ExternalLinkage, "main");
+  llvm::BasicBlock *entry = llvm::BasicBlock::Create(TheContext, "entrypoint", F);
 
-  Builder = std::make_unique<llvm::IRBuilder<>>(TheContext);
+  Builder = std::make_unique<llvm::IRBuilder<>>(entry);
+  //Builder->SetInsertPoint(entry);
 }
 
 struct Expr;
@@ -198,13 +203,14 @@ struct Access : public Op {
         array = a;
         index = i;
     }
-    ExprPtr gen() override { return std::make_shared<Access>(array, index->reduce(), type); }
+    ExprPtr gen() override { return ExprPtr(new Access(array, index->reduce(), type)); }
     void jumping(int t,int f) override { emitjumps(reduce()->toString(),t,f); }
     std::string toString() override {
         return array->toString() + " [ " + index->toString() + " ]";
     }
    ValuePtr codegen() override {
        ValuePtr v = Builder->CreateGEP(array->codegen(), index->codegen());
+       //llvm::Type *ty = array->type->of()->type();
        return Builder->CreateLoad(v);
    }
 
