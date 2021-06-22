@@ -336,6 +336,7 @@ using StmtPtr = std::shared_ptr<Stmt>;
 struct Stmt : public Node {
     static StmtPtr Enclosing;
     int after = 0;
+    llvm::BasicBlock *leave = nullptr;
     virtual void gen(int b, int a) {}
     static StmtPtr null();
 };
@@ -350,6 +351,26 @@ struct Break : public Stmt {
 
     void gen(int b, int a) override {
         emit("goto L" + std::to_string(stmt->after));
+    }
+    ValuePtr codegen() override {
+        //Builder->CreateBr()
+        if (stmt->leave) {
+            return Builder->CreateBr(stmt->leave);
+        }
+        return nullptr;
+    }
+    static ValuePtr IfTrueValue(ExprPtr expr) {
+       ValuePtr CondV = expr->codegen();
+       if (!CondV) return nullptr;
+       //Builder->CreateICmpNE(CondV, llvm::ConstantInt::get(expr->type->type(), llvm::APInt(0)));
+       if (expr->type == Type::Int) {
+           ValuePtr zero = Builder->getIntN(expr->type->type()->getIntegerBitWidth(), 0);
+           return Builder->CreateICmpNe(CondV, zero, "ifcond");
+       } else if (expr->type == Type::Float) {
+           ValuePtr zero = llvm::ConstantFP::get(TheContext, llvm::APFloat(0.0));
+           return Builder->CreateFCmpONE(CondV,zero , "ifcond");
+       }
+       return nullptr;
     }
 
 };
@@ -373,6 +394,27 @@ struct Do : public Stmt {
       emitlabel(label);
       expr->jumping(b,0);
    }
+
+   ValuePtr codegen() override {
+       llvm::BasicBlock *CondBB = llvm::BasicBlock::Create(TheContext, "cond");
+       llvm::BasicBlock *LoopBB = llvm::BasicBlock::Create(TheContext, "loop");
+       llvm::BasicBlock *LeaveBB = llvm::BasicBlock::Create(TheContext, "leave");
+       llvm::Function *TheFunction = Builder->GetInsertBlock()->getParent();
+       TheFunction->getBasicBlockList().push_back(LoopBB);
+       Builder->SetInsertPoint(LoopBB);
+       ValuePtr LoopV = stmt->codegen();
+       Builder->CreateBr(CondBB);
+       LoopBB = Builder->GetInsertBlock();
+
+       TheFunction->getBasicBlockList().push_back(CondBB);
+       Builder->SetInsertPoint(CondBB);
+       ValuePtr CondV = IfTrueValue(expr);
+       //if (!CondV) return nullptr;
+       CondBB = Builder->GetInsertPoint();
+
+       Builder->CreateCondBr(CondV, LoopBB, LeaveBB);
+       return nullptr;
+   }
 };
 
 struct If;
@@ -392,7 +434,7 @@ struct If : public Stmt {
    }
 
    ValuePtr codegen() override {
-       ValuePtr CondV = expr->codegen();
+       ValuePtr CondV = IfTrueValue(expr);
        if (!CondV) return nullptr;
        //Builder->getIntN(expr->type->type()->getIntegerBitWidth(), 0);
        //Builder->CreateICmpNE(CondV, llvm::ConstantInt::get(expr->type->type(), llvm::APInt(0)));
