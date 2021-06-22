@@ -8,12 +8,6 @@
 #include <Node.h>
 #include <memory>
 
-#include "llvm/IR/Module.h"
-#include "llvm/IR/PassManager.h"
-#include "llvm/IR/IRBuilder.h"
-
-//using namespace llvm;
-using ValuePtr = llvm::Value *;
 
 extern llvm::LLVMContext TheContext;
 
@@ -55,7 +49,6 @@ struct Expr : public Node {
         return op.toString();
     }
 
-    virtual ValuePtr codegen() { return nullptr; }
 };
 struct Constant;
 using ConstantPtr = std::shared_ptr<Constant>;
@@ -335,7 +328,7 @@ struct Rel : public Logical {
             cmpOp = type == Type::Int ? CmpOps::ICMP_SLT : CmpOps::FCMP_OLT;
         }
         return llvm::CmpInst::Create(instOp, cmpOp, L, R, "cmptemp");
-        
+
      }
 };
 struct Stmt;
@@ -397,6 +390,31 @@ struct If : public Stmt {
       expr->jumping(0, a);     // fall through on true, goto a on false
       emitlabel(label); if (stmt) stmt->gen(label, a);
    }
+
+   ValuePtr codegen() override {
+       ValuePtr CondV = expr->codegen();
+       if (!CondV) return nullptr;
+       //Builder->getIntN(expr->type->type()->getIntegerBitWidth(), 0);
+       //Builder->CreateICmpNE(CondV, llvm::ConstantInt::get(expr->type->type(), llvm::APInt(0)));
+       CondV = Builder->CreateFCmpONE(CondV, llvm::ConstantFP::get(TheContext, llvm::APFloat(0.0)), "ifcond");
+       llvm::Function *TheFunction = Builder->GetInsertBlock()->getParent();
+       llvm::BasicBlock *ThenBB = llvm::BasicBlock::Create(TheContext, "then", TheFunction);
+       llvm::BasicBlock *LeaveBB = llvm::BasicBlock::Create(TheContext, "leave", TheFunction);
+       llvm::BranchInst *br = Builder->CreateCondBr(CondV, ThenBB, LeaveBB);
+       
+       TheFunction->getBasicBlockList().push_back(ThenBB);
+       Builder->SetInsertPoint(ThenBB);
+       ValuePtr ThenV = stmt->codegen();
+       //if (!ThenV) return nullptr;
+       ThenBB = Builder->GetInsertBlock();
+       Builder->CreateBr(LeaveBB);
+
+       TheFunction->getBasicBlockList().push_back(LeaveBB);
+       Builder->SetInsertPoint(LeaveBB);
+       //llvm::PHINode *PN = Builder->CreatePHI()
+       //Builder->GetInsertBlock()
+       return CondV;
+   }
 };
 
 struct Else;
@@ -416,6 +434,37 @@ struct Else : public Stmt {
       emitlabel(label1); if (stmt1) stmt1->gen(label1, a); emit("goto L" + std::to_string(a));
       emitlabel(label2); if (stmt2) stmt2->gen(label2, a);
    }
+   ValuePtr codegen() override {
+       ValuePtr CondV = expr->codegen();
+       if (!CondV) return nullptr;
+       //Builder->getIntN(expr->type->type()->getIntegerBitWidth(), 0);
+       //Builder->CreateICmpNE(CondV, llvm::ConstantInt::get(expr->type->type(), llvm::APInt(0)));
+       CondV = Builder->CreateFCmpONE(CondV, llvm::ConstantFP::get(TheContext, llvm::APFloat(0.0)), "ifcond");
+       llvm::Function *TheFunction = Builder->GetInsertBlock()->getParent();
+       llvm::BasicBlock *ThenBB = llvm::BasicBlock::Create(TheContext, "then", TheFunction);
+       llvm::BasicBlock *ElseBB = llvm::BasicBlock::Create(TheContext, "else", TheFunction);
+       llvm::BasicBlock *LeaveBB = llvm::BasicBlock::Create(TheContext, "leave", TheFunction);
+       llvm::BranchInst *br = Builder->CreateCondBr(CondV, ThenBB, ElseBB);
+       
+       TheFunction->getBasicBlockList().push_back(ThenBB);
+       Builder->SetInsertPoint(ThenBB);
+       ValuePtr ThenV = stmt1->codegen();
+       ThenBB = Builder->GetInsertBlock();
+       Builder->CreateBr(LeaveBB);
+
+       TheFunction->getBasicBlockList().push_back(ElseBB);
+       Builder->SetInsertPoint(ElseBB);
+       ValuePtr ElseV = stmt2->codegen();
+       ElseV = Builder->GetInsertBlock();
+       Builder->CreateBr(LeaveBB);
+
+       TheFunction->getBasicBlockList().push_back(LeaveBB);
+       Builder->SetInsertPoint(LeaveBB);
+       //llvm::PHINode *PN = Builder->CreatePHI()
+       //Builder->GetInsertBlock()
+       return CondV;
+
+   }
 };
 
 struct Seq;
@@ -434,6 +483,10 @@ struct Seq : public Stmt {
          emitlabel(label);
          stmt2->gen(label,a);
       }
+   }
+   ValuePtr codegen() override {
+       stmt1->codegen();
+       return stmt2->codegen();
    }
 };
 struct Set;

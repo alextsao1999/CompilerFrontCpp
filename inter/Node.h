@@ -11,6 +11,14 @@
 #include <Token.h>
 #include <iostream>
 #include <memory>
+
+#include "llvm/IR/Module.h"
+#include "llvm/IR/PassManager.h"
+#include "llvm/IR/IRBuilder.h"
+
+//using namespace llvm;
+using ValuePtr = llvm::Value *;
+
 struct Node : public std::enable_shared_from_this<Node> {
     int lexline = 0;
     Node() {
@@ -31,6 +39,7 @@ struct Node : public std::enable_shared_from_this<Node> {
         std::cout << "\t" << str << std::endl;
     }
     virtual std::string toString() { return ""; }
+    virtual ValuePtr codegen() { return nullptr; }
 
 };
 using NodePtr = std::shared_ptr<Node>;
