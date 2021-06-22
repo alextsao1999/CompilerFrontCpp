@@ -339,6 +339,20 @@ struct Stmt : public Node {
     llvm::BasicBlock *leave = nullptr;
     virtual void gen(int b, int a) {}
     static StmtPtr null();
+    static ValuePtr IfTrueValue(ExprPtr expr) {
+       ValuePtr CondV = expr->codegen();
+       if (!CondV) return nullptr;
+       //Builder->CreateICmpNE(CondV, llvm::ConstantInt::get(expr->type->type(), llvm::APInt(0)));
+       if (expr->type == Type::Int) {
+           ValuePtr zero = Builder->getIntN(expr->type->type()->getIntegerBitWidth(), 0);
+           return Builder->CreateICmpNE(CondV, zero, "ifcond");
+       } else if (expr->type == Type::Float) {
+           ValuePtr zero = llvm::ConstantFP::get(TheContext, llvm::APFloat(0.0));
+           return Builder->CreateFCmpONE(CondV,zero , "ifcond");
+       }
+       return nullptr;
+    }
+
 };
 struct Break;
 using BreakPtr = std::shared_ptr<Break>;
@@ -358,19 +372,6 @@ struct Break : public Stmt {
             return Builder->CreateBr(stmt->leave);
         }
         return nullptr;
-    }
-    static ValuePtr IfTrueValue(ExprPtr expr) {
-       ValuePtr CondV = expr->codegen();
-       if (!CondV) return nullptr;
-       //Builder->CreateICmpNE(CondV, llvm::ConstantInt::get(expr->type->type(), llvm::APInt(0)));
-       if (expr->type == Type::Int) {
-           ValuePtr zero = Builder->getIntN(expr->type->type()->getIntegerBitWidth(), 0);
-           return Builder->CreateICmpNe(CondV, zero, "ifcond");
-       } else if (expr->type == Type::Float) {
-           ValuePtr zero = llvm::ConstantFP::get(TheContext, llvm::APFloat(0.0));
-           return Builder->CreateFCmpONE(CondV,zero , "ifcond");
-       }
-       return nullptr;
     }
 
 };
@@ -410,9 +411,12 @@ struct Do : public Stmt {
        Builder->SetInsertPoint(CondBB);
        ValuePtr CondV = IfTrueValue(expr);
        //if (!CondV) return nullptr;
-       CondBB = Builder->GetInsertPoint();
-
        Builder->CreateCondBr(CondV, LoopBB, LeaveBB);
+       CondBB = Builder->GetInsertBlock();
+
+       TheFunction->getBasicBlockList().push_back(LeaveBB);
+       Builder->SetInsertPoint(LeaveBB);
+
        return nullptr;
    }
 };
@@ -502,8 +506,6 @@ struct Else : public Stmt {
 
        TheFunction->getBasicBlockList().push_back(LeaveBB);
        Builder->SetInsertPoint(LeaveBB);
-       //llvm::PHINode *PN = Builder->CreatePHI()
-       //Builder->GetInsertBlock()
        return CondV;
 
    }
@@ -578,6 +580,13 @@ struct SetElem : public Stmt {
       std::string s2 = expr->reduce()->toString();
       emit(array->toString() + " [ " + s1 + " ] = " + s2);
    }
+   ValuePtr codegen() override {
+       ValuePtr Base = array->codegen();
+       ValuePtr Offset = Builder->CreateGEP(Base, index->codegen());
+       ValuePtr RHS = expr->codegen();
+
+       return Builder->CreateStore(RHS, Offset);
+   }
 };
 struct While;
 using WhilePtr = std::shared_ptr<While>;
@@ -598,6 +607,31 @@ struct While : public Stmt {
        emitlabel(label);
        stmt->gen(label, b);
        emit("goto L" + std::to_string(b));
+   }
+
+   ValuePtr codegen() override {
+       llvm::BasicBlock *CondBB = llvm::BasicBlock::Create(TheContext, "cond");
+       llvm::BasicBlock *LoopBB = llvm::BasicBlock::Create(TheContext, "loop");
+       llvm::BasicBlock *LeaveBB = llvm::BasicBlock::Create(TheContext, "leave");
+       llvm::Function *TheFunction = Builder->GetInsertBlock()->getParent();
+
+       TheFunction->getBasicBlockList().push_back(CondBB);
+       Builder->SetInsertPoint(CondBB);
+       ValuePtr CondV = IfTrueValue(expr);
+       //if (!CondV) return nullptr;
+       Builder->CreateCondBr(CondV, LoopBB, LeaveBB);
+       CondBB = Builder->GetInsertBlock();
+
+       TheFunction->getBasicBlockList().push_back(LoopBB);
+       Builder->SetInsertPoint(LoopBB);
+       ValuePtr LoopV = stmt->codegen();
+       Builder->CreateBr(CondBB);
+       LoopBB = Builder->GetInsertBlock();
+
+       TheFunction->getBasicBlockList().push_back(LeaveBB);
+       Builder->SetInsertPoint(LeaveBB);
+
+       return CondV;
    }
 };
 
