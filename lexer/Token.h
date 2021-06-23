@@ -105,22 +105,6 @@ public:
     static bool numeric(Type *p) {
         return p == Char || p == Int || p == Float;
     }
-    static llvm::Value *cast(Type *src, Type *des, llvm::Value *v) {
-        using Ops = llvm::Instruction::CastOps;
-        static std::map<std::pair<Type *, Type *>, Ops> cvt = {
-            {{Int, Float}, Ops::FPToSI},
-            {{Float, Int}, Ops::SIToFP},
-        };
-        if (src == des) {
-            return v;
-        }
-        if (cvt.count(std::pair(src, des))) {
-            Ops op = cvt[std::pair(src, des)];
-            return llvm::CastInst::Create(op, v, des->type());
-        }
-        assert(!"unsupported type cast");
-        return v;
-    }
     static Type *newArray(int sz, Type *p) {
         static std::vector<std::unique_ptr<Type>> container;
         Type *ty = new Type(sz, p);
@@ -133,6 +117,9 @@ public:
     Type(int sz, Type *p) : Token("[]", Token::INDEX, this), of_(p), width_(sz * p->width_), size_(sz), isArray_(true) {
         if (p->type())
             type_ = llvm::ArrayType::get(p->type(), sz);
+        // if (p->of())
+        //     type_ = llvm::ArrayType::get(p->type()->getArrayElementType(), p->type()->getArrayNumElements() * sz);
+        // else type_ = llvm::ArrayType::get(p->type(), sz);
     }
     //Type(int sz, Type *p, llvm::Type *ty) : Token("[]", Token::INDEX, this), of_(p), width_(sz * p->width_), size_(sz), isArray_(true), type_(ty) {}
     Type *of() {

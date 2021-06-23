@@ -11,22 +11,40 @@
 
 extern llvm::LLVMContext TheContext;
 
-static std::unique_ptr<llvm::Module> TheModule;
+static llvm::Module *TheModule;
 static std::unique_ptr<llvm::IRBuilder<>> Builder;
 //static std::unique_ptr<KaleidoscopeJIT> TheJIT;
+static llvm::Value *cast(Type *src, Type *des, llvm::Value *v) {
+    //Builder->CreateCast()
+    using Ops = llvm::Instruction::CastOps;
+    static std::map<std::pair<Type *, Type *>, Ops> cvt = {
+        {{Type::Int, Type::Float}, Ops::SIToFP},
+        {{Type::Float, Type::Int}, Ops::FPToSI},
+    };
+    if (src == des) {
+        return v;
+    }
+    if (cvt.count(std::pair(src, des))) {
+        Ops op = cvt[std::pair(src, des)];
+        return Builder->CreateCast(op, v, des->type());
+        //return llvm::CastInst::Create(op, v, des->type(), "casttemp");
+    }
+    assert(!"unsupported type cast");
+    return v;
+}
 
 static void InitializeModule() {
   // Open a new module.
   // TheContext = std::make_unique<llvm::LLVMContext>();
-  TheModule = std::make_unique<llvm::Module>("My Module", TheContext);
+  TheModule = new llvm::Module("My Module", TheContext);
   //TheModule->setDataLayout(TheJIT->getDataLayout());
-  
   llvm::FunctionType *FT = llvm::FunctionType::get(llvm::Type::getInt32Ty(TheContext), false);
-  llvm::Function *F = llvm::Function::Create(FT, llvm::Function::ExternalLinkage, "main");
+  llvm::Function *F = llvm::Function::Create(FT, llvm::Function::ExternalLinkage, "main", *TheModule);
   llvm::BasicBlock *entry = llvm::BasicBlock::Create(TheContext, "entrypoint", F);
 
   Builder = std::make_unique<llvm::IRBuilder<>>(entry);
   //Builder->SetInsertPoint(entry);
+
 }
 
 struct Expr;
@@ -81,11 +99,11 @@ struct Id : public Expr {
     int offset;
     ValuePtr value;
     Id(Token id, TypePtr p, int b) : Expr(id, p), offset(b) {
-        value = Builder->CreateAlloca(p->type());
+        value = Builder->CreateAlloca(p->type(), nullptr, id.lexeme());
     }
     //	public String toString() {return "" + op.toString() + offset;}
    ValuePtr codegen() override {
-       return value;
+       return Builder->CreateLoad(value);
    }
 
 };
@@ -121,10 +139,12 @@ struct Unary : public Op {
     }
     std::string toString() override { return op.toString()+" "+expr->toString(); }
     virtual ValuePtr codegen() {
-        if (op == '-') {
-            //Builder->CreateSub()
-            
-            return Builder->CreateUnOp(llvm::Instruction::UnaryOps::FNeg, expr->codegen());
+        ValuePtr RHS = expr->codegen();
+        if (type == Type::Float)
+            return Builder->CreateUnOp(llvm::Instruction::UnaryOps::FNeg, RHS);
+        else if(type == Type::Int) {
+            ValuePtr zero = llvm::ConstantInt::get(expr->type->type(), 0);
+            return Builder->CreateSub(zero, RHS);
         }
         assert(!"not reachable");
         return nullptr;
@@ -180,8 +200,8 @@ struct Arith : public Op {
     virtual ValuePtr codegen() {
         ValuePtr L = expr1->codegen();
         ValuePtr R = expr2->codegen();
-        L = Type::cast(expr1->type, type, L);
-        R = Type::cast(expr2->type, type, R);
+        L = cast(expr1->type, type, L);
+        R = cast(expr2->type, type, R);
         if (type == Type::Float) {
             return binaryOpFloat(op.tag(), L, R);
         }
@@ -197,11 +217,17 @@ struct Arith : public Op {
 struct Access;
 using AccessPtr = std::shared_ptr<Access>;
 struct Access : public Op {
-    ExprPtr array;
+    IdPtr array;
     ExprPtr index;
-    Access(ExprPtr a, ExprPtr i, TypePtr p) : Op(Token::word("[]", Token::INDEX), p) {
+    std::vector<ExprPtr> indexs;
+    Access(IdPtr a, ExprPtr i, TypePtr p) : Op(Token::word("[]", Token::INDEX), p) {
         array = a;
         index = i;
+    }
+    Access(IdPtr a, ExprPtr i, TypePtr p, std::vector<ExprPtr> &is) : Op(Token::word("[]", Token::INDEX), p) {
+        array = a;
+        index = i;
+        indexs.swap(is);
     }
     ExprPtr gen() override { return ExprPtr(new Access(array, index->reduce(), type)); }
     void jumping(int t,int f) override { emitjumps(reduce()->toString(),t,f); }
@@ -209,9 +235,13 @@ struct Access : public Op {
         return array->toString() + " [ " + index->toString() + " ]";
     }
    ValuePtr codegen() override {
-       ValuePtr v = Builder->CreateGEP(array->codegen(), index->codegen());
-       //llvm::Type *ty = array->type->of()->type();
-       return Builder->CreateLoad(v);
+       ValuePtr Base = array->value;
+       std::vector<ValuePtr> Idxs{Builder->getInt32(0)};
+       for (auto &p : indexs) {
+           Idxs.push_back(p->codegen());
+       }
+       ValuePtr Offset = Builder->CreateGEP(Base, Idxs);
+       return Builder->CreateLoad(Offset);
    }
 
 };
@@ -291,7 +321,7 @@ struct Or : public Logical {
 struct Rel : public Logical {
     //using Logical::Logical;
     Rel(Token tok, ExprPtr x1, ExprPtr x2) : Logical(tok, x1, x2, Type::null()) {
-        type = check(x1->type, x1->type);
+        type = check(x1->type, x2->type);
         if (type == Type::null())
             error("type error");
     }
@@ -308,33 +338,30 @@ struct Rel : public Logical {
     }
     
     ValuePtr codegen() override {
-        using InstOps = llvm::Instruction::OtherOps;
         using CmpOps = llvm::CmpInst::Predicate;
         ValuePtr L = expr1->codegen();
         ValuePtr R = expr2->codegen();
-        L = Type::cast(expr1->type, type, L);
-        R = Type::cast(expr2->type, type, R);
-        InstOps instOp;
+        TypePtr OpType = Type::max(expr1->type, expr2->type);
+        L = cast(expr1->type, OpType, L);
+        R = cast(expr2->type, OpType, R);
         CmpOps cmpOp;
-        if (type == Type::Float) {
-            instOp = InstOps::FCmp;
-        }
-        if (type == Type::Int) {
-            instOp = InstOps::ICmp;
-        }
         if (op == Token::EQ) {
-            cmpOp = type == Type::Int ? CmpOps::ICMP_EQ : CmpOps::FCMP_OEQ;
+            cmpOp = OpType == Type::Int ? CmpOps::ICMP_EQ : CmpOps::FCMP_OEQ;
+        } else if (op == Token::NE) {
+            cmpOp = OpType == Type::Int ? CmpOps::ICMP_NE : CmpOps::FCMP_ONE;
         } else if(op == Token::GE) {
-            cmpOp = type == Type::Int ? CmpOps::ICMP_SGE : CmpOps::FCMP_OGE;
+            cmpOp = OpType == Type::Int ? CmpOps::ICMP_SGE : CmpOps::FCMP_OGE;
         } else if(op == Token::LE) {
-            cmpOp = type == Type::Int ? CmpOps::ICMP_SLE : CmpOps::FCMP_OLE;
+            cmpOp = OpType == Type::Int ? CmpOps::ICMP_SLE : CmpOps::FCMP_OLE;
         } else if(op == '>') {
-            cmpOp = type == Type::Int ? CmpOps::ICMP_SGT : CmpOps::FCMP_OGT;
+            cmpOp = OpType == Type::Int ? CmpOps::ICMP_SGT : CmpOps::FCMP_OGT;
         } else if(op == '<') {
-            cmpOp = type == Type::Int ? CmpOps::ICMP_SLT : CmpOps::FCMP_OLT;
+            cmpOp = OpType == Type::Int ? CmpOps::ICMP_SLT : CmpOps::FCMP_OLT;
+        } else {
+            assert(!"not reachable");
         }
-        return llvm::CmpInst::Create(instOp, cmpOp, L, R, "cmptemp");
-
+        //llvm::outs() << *TheModule << "\n";
+        return Builder->CreateCmp(cmpOp, L, R, "cmptemp");
      }
 };
 struct Stmt;
@@ -345,20 +372,6 @@ struct Stmt : public Node {
     llvm::BasicBlock *leave = nullptr;
     virtual void gen(int b, int a) {}
     static StmtPtr null();
-    static ValuePtr IfTrueValue(ExprPtr expr) {
-       ValuePtr CondV = expr->codegen();
-       if (!CondV) return nullptr;
-       //Builder->CreateICmpNE(CondV, llvm::ConstantInt::get(expr->type->type(), llvm::APInt(0)));
-       if (expr->type == Type::Int) {
-           ValuePtr zero = Builder->getIntN(expr->type->type()->getIntegerBitWidth(), 0);
-           return Builder->CreateICmpNE(CondV, zero, "ifcond");
-       } else if (expr->type == Type::Float) {
-           ValuePtr zero = llvm::ConstantFP::get(TheContext, llvm::APFloat(0.0));
-           return Builder->CreateFCmpONE(CondV,zero , "ifcond");
-       }
-       return nullptr;
-    }
-
 };
 struct Break;
 using BreakPtr = std::shared_ptr<Break>;
@@ -409,13 +422,13 @@ struct Do : public Stmt {
        llvm::Function *TheFunction = Builder->GetInsertBlock()->getParent();
        TheFunction->getBasicBlockList().push_back(LoopBB);
        Builder->SetInsertPoint(LoopBB);
-       ValuePtr LoopV = stmt->codegen();
+       if (stmt) ValuePtr LoopV = stmt->codegen();
        Builder->CreateBr(CondBB);
        LoopBB = Builder->GetInsertBlock();
 
        TheFunction->getBasicBlockList().push_back(CondBB);
        Builder->SetInsertPoint(CondBB);
-       ValuePtr CondV = IfTrueValue(expr);
+       ValuePtr CondV = expr->codegen();
        //if (!CondV) return nullptr;
        Builder->CreateCondBr(CondV, LoopBB, LeaveBB);
        CondBB = Builder->GetInsertBlock();
@@ -444,19 +457,19 @@ struct If : public Stmt {
    }
 
    ValuePtr codegen() override {
-       ValuePtr CondV = IfTrueValue(expr);
+       ValuePtr CondV = expr->codegen();
        if (!CondV) return nullptr;
        //Builder->getIntN(expr->type->type()->getIntegerBitWidth(), 0);
        //Builder->CreateICmpNE(CondV, llvm::ConstantInt::get(expr->type->type(), llvm::APInt(0)));
-       CondV = Builder->CreateFCmpONE(CondV, llvm::ConstantFP::get(TheContext, llvm::APFloat(0.0)), "ifcond");
+       //CondV = Builder->CreateFCmpONE(CondV, llvm::ConstantFP::get(TheContext, llvm::APFloat(0.0)), "ifcond");
        llvm::Function *TheFunction = Builder->GetInsertBlock()->getParent();
-       llvm::BasicBlock *ThenBB = llvm::BasicBlock::Create(TheContext, "then", TheFunction);
-       llvm::BasicBlock *LeaveBB = llvm::BasicBlock::Create(TheContext, "leave", TheFunction);
+       llvm::BasicBlock *ThenBB = llvm::BasicBlock::Create(TheContext, "then");
+       llvm::BasicBlock *LeaveBB = llvm::BasicBlock::Create(TheContext, "leave");
        llvm::BranchInst *br = Builder->CreateCondBr(CondV, ThenBB, LeaveBB);
        
        TheFunction->getBasicBlockList().push_back(ThenBB);
        Builder->SetInsertPoint(ThenBB);
-       ValuePtr ThenV = stmt->codegen();
+       if (stmt) ValuePtr ThenV = stmt->codegen();
        //if (!ThenV) return nullptr;
        ThenBB = Builder->GetInsertBlock();
        Builder->CreateBr(LeaveBB);
@@ -491,23 +504,26 @@ struct Else : public Stmt {
        if (!CondV) return nullptr;
        //Builder->getIntN(expr->type->type()->getIntegerBitWidth(), 0);
        //Builder->CreateICmpNE(CondV, llvm::ConstantInt::get(expr->type->type(), llvm::APInt(0)));
-       CondV = Builder->CreateFCmpONE(CondV, llvm::ConstantFP::get(TheContext, llvm::APFloat(0.0)), "ifcond");
+       //ValuePtr zero = llvm::ConstantFP::get(TheContext, llvm::APFloat(0.0));
+       //CondV = Builder->CreateFCmpONE(CondV, zero, "ifcond");
+       //ValuePtr Zero = nullptr;
+       //CondV = Builder->CreateICmpNE(CondV, Zero);
        llvm::Function *TheFunction = Builder->GetInsertBlock()->getParent();
-       llvm::BasicBlock *ThenBB = llvm::BasicBlock::Create(TheContext, "then", TheFunction);
-       llvm::BasicBlock *ElseBB = llvm::BasicBlock::Create(TheContext, "else", TheFunction);
-       llvm::BasicBlock *LeaveBB = llvm::BasicBlock::Create(TheContext, "leave", TheFunction);
+       llvm::BasicBlock *ThenBB = llvm::BasicBlock::Create(TheContext, "then");
+       llvm::BasicBlock *ElseBB = llvm::BasicBlock::Create(TheContext, "else");
+       llvm::BasicBlock *LeaveBB = llvm::BasicBlock::Create(TheContext, "leave");
        llvm::BranchInst *br = Builder->CreateCondBr(CondV, ThenBB, ElseBB);
        
        TheFunction->getBasicBlockList().push_back(ThenBB);
        Builder->SetInsertPoint(ThenBB);
-       ValuePtr ThenV = stmt1->codegen();
+       if(stmt1) ValuePtr ThenV = stmt1->codegen();
        ThenBB = Builder->GetInsertBlock();
        Builder->CreateBr(LeaveBB);
 
        TheFunction->getBasicBlockList().push_back(ElseBB);
        Builder->SetInsertPoint(ElseBB);
-       ValuePtr ElseV = stmt2->codegen();
-       ElseV = Builder->GetInsertBlock();
+       if(stmt2) ValuePtr ElseV = stmt2->codegen();
+       ElseBB = Builder->GetInsertBlock();
        Builder->CreateBr(LeaveBB);
 
        TheFunction->getBasicBlockList().push_back(LeaveBB);
@@ -535,15 +551,16 @@ struct Seq : public Stmt {
       }
    }
    ValuePtr codegen() override {
-       stmt1->codegen();
-       return stmt2->codegen();
+       if (stmt1) stmt1->codegen();
+       if (stmt2) stmt2->codegen();
+       return nullptr;
    }
 };
 struct Set;
 using SetPtr = std::shared_ptr<Set>;
 struct Set : public Stmt {
-   ExprPtr id; ExprPtr expr;
-   Set(ExprPtr i, ExprPtr x) {
+   IdPtr id; ExprPtr expr;
+   Set(IdPtr i, ExprPtr x) {
       id = i; expr = x;
       if (check(id->type, expr->type) == Type::null() )
           error("type error");
@@ -559,7 +576,9 @@ struct Set : public Stmt {
       emit( id->toString() + " = " + expr->gen()->toString() );
    }
     ValuePtr codegen() {
-        return Builder->CreateStore(expr->codegen(), id->codegen());
+        ValuePtr RHS = expr->codegen();
+        RHS = cast(expr->type, id->type, RHS);
+        return Builder->CreateStore(RHS, id->value);
     }
 
 };
@@ -567,10 +586,11 @@ struct SetElem;
 using SetElemPtr = std::shared_ptr<SetElem>;
 struct SetElem : public Stmt {
 
-   ExprPtr array; ExprPtr index; ExprPtr expr;
-
+   IdPtr array; ExprPtr index; ExprPtr expr;
+   std::vector<ExprPtr> indexs;
    SetElem(AccessPtr x, ExprPtr y) {
       array = x->array; index = x->index; expr = y;
+      indexs.assign(x->indexs.begin(), x->indexs.end());
       if (check(x->type, expr->type) == Type::null() ) error("type error");
    }
 
@@ -587,10 +607,19 @@ struct SetElem : public Stmt {
       emit(array->toString() + " [ " + s1 + " ] = " + s2);
    }
    ValuePtr codegen() override {
-       ValuePtr Base = array->codegen();
-       ValuePtr Offset = Builder->CreateGEP(Base, index->codegen());
+       ValuePtr Base = array->value;
+       //ValuePtr Index = index->codegen();
+       std::vector<ValuePtr> Idxs;
+       Idxs.push_back(Builder->getInt32(0));
+       Type *EleType = array->type;
+       for (auto &p : indexs) {
+           Idxs.push_back(p->codegen());
+           EleType = EleType->of();
+       }
+       ValuePtr Offset = Builder->CreateGEP(Base, Idxs);
        ValuePtr RHS = expr->codegen();
-
+       RHS = cast(expr->type, EleType, RHS);
+       //llvm::outs() << *TheModule;
        return Builder->CreateStore(RHS, Offset);
    }
 };
@@ -623,14 +652,14 @@ struct While : public Stmt {
 
        TheFunction->getBasicBlockList().push_back(CondBB);
        Builder->SetInsertPoint(CondBB);
-       ValuePtr CondV = IfTrueValue(expr);
+       ValuePtr CondV = expr->codegen();
        //if (!CondV) return nullptr;
        Builder->CreateCondBr(CondV, LoopBB, LeaveBB);
        CondBB = Builder->GetInsertBlock();
 
        TheFunction->getBasicBlockList().push_back(LoopBB);
        Builder->SetInsertPoint(LoopBB);
-       ValuePtr LoopV = stmt->codegen();
+       if (stmt) ValuePtr LoopV = stmt->codegen();
        Builder->CreateBr(CondBB);
        LoopBB = Builder->GetInsertBlock();
 

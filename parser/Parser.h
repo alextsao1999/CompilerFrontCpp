@@ -23,6 +23,7 @@ public:
     void move() { look = lex.scan(); }
     void error(const std::string &s) {
         std::cout << s;
+        abort();
     }
 
     void match(int t) {
@@ -32,9 +33,10 @@ public:
 
     void program() {
         StmtPtr s = block();
-        int begin = s->newlabel();int after = s->newlabel();
-        s->emitlabel(begin); s->gen(begin, after); s->emitlabel(after);
+        // int begin = s->newlabel();int after = s->newlabel();
+        // s->emitlabel(begin); s->gen(begin, after); s->emitlabel(after);
         s->codegen();
+        Builder->CreateRet(Builder->getInt32(0));
     }
     StmtPtr block() {
         Env env(top);
@@ -128,8 +130,7 @@ public:
         if (!id) error(t.toString() + " undeclared");
         if (look.tag() == '=') {
             move(); stmt = StmtPtr(new Set(id, boolean()));
-        }
-        else {
+        } else {
             AccessPtr x = offset(id);
             match('=');
             stmt = StmtPtr(new SetElem(x, boolean()));
@@ -226,14 +227,17 @@ public:
         w = ExprPtr(new Constant(type->width()));
         t1 = ExprPtr(new Arith(Token('*'), i, w));
         loc = t1;
+        std::vector<ExprPtr> indexs({i});
         while (look.tag() == '[') {
             match('['); i = boolean(); match(']');
             type = type->of();
             t1 = ExprPtr(new Arith(Token('*'), i, w));
             t2 = ExprPtr(new Arith(Token('+'), loc, t1));
             loc = t2;
+            indexs.push_back(i);
+            
         }
-        return AccessPtr(new Access(a, loc, type));
+        return AccessPtr(new Access(a, loc, type, indexs));
     }
 
 
