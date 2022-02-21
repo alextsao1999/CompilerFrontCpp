@@ -73,6 +73,7 @@ struct Expr : public Node {
     }
 
 };
+
 struct Constant;
 using ConstantPtr = std::shared_ptr<Constant>;
 struct Constant : public Expr {
@@ -93,6 +94,7 @@ struct Constant : public Expr {
        return Builder->getInt32(op.number());
    }
 };
+
 struct Id;
 using IdPtr = std::shared_ptr<Id>;
 struct Id : public Expr {
@@ -107,6 +109,7 @@ struct Id : public Expr {
    }
 
 };
+
 struct Temp : public Expr {
     int number = 0;
     ValuePtr value;
@@ -118,6 +121,7 @@ struct Temp : public Expr {
         return "t" + std::to_string(number);
     }
 };
+
 struct Op : public Expr {
     using Expr::Expr;
     ExprPtr reduce() {
@@ -127,6 +131,7 @@ struct Op : public Expr {
         return t;
     }
 };
+
 struct Unary : public Op {
     ExprPtr expr;
     using Op::Op;
@@ -152,6 +157,7 @@ struct Unary : public Op {
 
 
 };
+
 struct Arith : public Op {
     ExprPtr expr1, expr2;
     Arith(Token tok, ExprPtr x1, ExprPtr x2) : Op(tok, Type::null()), expr1(x1), expr2(x2) {
@@ -214,6 +220,7 @@ struct Arith : public Op {
     }
 
 };
+
 struct Access;
 using AccessPtr = std::shared_ptr<Access>;
 struct Access : public Op {
@@ -245,6 +252,7 @@ struct Access : public Op {
    }
 
 };
+
 struct Logical : public Expr {
     ExprPtr expr1, expr2;
     //using Expr::Expr;
@@ -275,6 +283,7 @@ struct Logical : public Expr {
         return expr1->toString() + " " + op.toString() + " " + expr2->toString();
     }
 };
+
 using Pred = llvm::CmpInst::Predicate;
 struct And : public Logical {
     using Logical::Logical;
@@ -364,6 +373,7 @@ struct Rel : public Logical {
         return Builder->CreateCmp(cmpOp, L, R, "cmptemp");
      }
 };
+
 struct Stmt;
 using StmtPtr = std::shared_ptr<Stmt>;
 struct Stmt : public Node {
@@ -373,6 +383,7 @@ struct Stmt : public Node {
     virtual void gen(int b, int a) {}
     static StmtPtr null();
 };
+
 struct Break;
 using BreakPtr = std::shared_ptr<Break>;
 struct Break : public Stmt {
@@ -394,6 +405,7 @@ struct Break : public Stmt {
     }
 
 };
+
 struct Do;
 using DoPtr = std::shared_ptr<Do>;
 struct Do : public Stmt {
@@ -420,6 +432,8 @@ struct Do : public Stmt {
        llvm::BasicBlock *LoopBB = llvm::BasicBlock::Create(TheContext, "loop");
        llvm::BasicBlock *LeaveBB = llvm::BasicBlock::Create(TheContext, "leave");
        llvm::Function *TheFunction = Builder->GetInsertBlock()->getParent();
+       Builder->CreateBr(LoopBB);
+
        TheFunction->getBasicBlockList().push_back(LoopBB);
        Builder->SetInsertPoint(LoopBB);
        if (stmt) ValuePtr LoopV = stmt->codegen();
@@ -556,6 +570,7 @@ struct Seq : public Stmt {
        return nullptr;
    }
 };
+
 struct Set;
 using SetPtr = std::shared_ptr<Set>;
 struct Set : public Stmt {
@@ -582,6 +597,7 @@ struct Set : public Stmt {
     }
 
 };
+
 struct SetElem;
 using SetElemPtr = std::shared_ptr<SetElem>;
 struct SetElem : public Stmt {
@@ -590,7 +606,7 @@ struct SetElem : public Stmt {
    std::vector<ExprPtr> indexs;
    SetElem(AccessPtr x, ExprPtr y) {
       array = x->array; index = x->index; expr = y;
-      indexs.assign(x->indexs.begin(), x->indexs.end());
+      indexs = x->indexs;
       if (check(x->type, expr->type) == Type::null() ) error("type error");
    }
 
@@ -623,6 +639,7 @@ struct SetElem : public Stmt {
        return Builder->CreateStore(RHS, Offset);
    }
 };
+
 struct While;
 using WhilePtr = std::shared_ptr<While>;
 struct While : public Stmt {
@@ -649,6 +666,8 @@ struct While : public Stmt {
        llvm::BasicBlock *LoopBB = llvm::BasicBlock::Create(TheContext, "loop");
        llvm::BasicBlock *LeaveBB = llvm::BasicBlock::Create(TheContext, "leave");
        llvm::Function *TheFunction = Builder->GetInsertBlock()->getParent();
+
+       Builder->CreateBr(CondBB);
 
        TheFunction->getBasicBlockList().push_back(CondBB);
        Builder->SetInsertPoint(CondBB);

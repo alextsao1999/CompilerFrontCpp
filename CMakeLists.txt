@@ -16,6 +16,6 @@ endforeach()
 
 add_executable(CompilerFrontCpp main.cpp ${SOURCES})
 
-llvm_map_components_to_libnames(LLVM_LIBS core support irreader)
+llvm_map_components_to_libnames(LLVM_LIBS core support irreader target codegen mcjit x86asmparser x86codegen x86desc x86disassembler x86info riscvasmparser riscvcodegen riscvdesc riscvdisassembler riscvinfo)
 target_link_libraries(CompilerFrontCpp ${LLVM_LIBS})
 message(STATUS ${LLVM_LIBS})

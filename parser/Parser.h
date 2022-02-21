@@ -31,13 +31,11 @@ public:
         else error("syntax error");
     }
 
-    void program() {
+    StmtPtr program() {
         StmtPtr s = block();
-        // int begin = s->newlabel();int after = s->newlabel();
-        // s->emitlabel(begin); s->gen(begin, after); s->emitlabel(after);
-        s->codegen();
-        Builder->CreateRet(Builder->getInt32(0));
+        return s;
     }
+
     StmtPtr block() {
         Env env(top);
         match('{');
@@ -231,6 +229,7 @@ public:
         while (look.tag() == '[') {
             match('['); i = boolean(); match(']');
             type = type->of();
+            w = ExprPtr(new Constant(type->width()));
             t1 = ExprPtr(new Arith(Token('*'), i, w));
             t2 = ExprPtr(new Arith(Token('+'), loc, t1));
             loc = t2;
